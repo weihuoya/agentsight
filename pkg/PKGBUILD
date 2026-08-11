@@ -35,8 +35,14 @@ prepare() {
     if [[ -n "$_gitroot" && -f "$_gitroot/collector/Cargo.toml" ]]; then
         echo "Syncing local source from $_gitroot (including uncommitted changes)..."
         mkdir -p "$pkgname"
-        cp -r "$_gitroot"/. "$pkgname"/
-        rm -rf "$pkgname/.git"
+        # Use tar to copy the working tree while excluding directories that
+        # would cause a recursive copy into itself (pkg/.build/src/... lives
+        # under $_gitroot when makepkg is invoked from pkg/).
+        tar -C "$_gitroot" -cf - \
+            --exclude='.git' \
+            --exclude='pkg' \
+            --exclude='.build' \
+            . | tar -C "$pkgname" -xf -
     else
         echo "WARNING: Building from tarball without git submodules."
         echo "Please build from a git checkout or use the git source."
