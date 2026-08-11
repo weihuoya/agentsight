@@ -11,6 +11,8 @@ permissions:
 
 env:
   VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+  # Fixed release tag for manual builds; tag pushes still use the tag name.
+  RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'agentsight-arch-pkg' }}
 
 jobs:
   build-arch-pkg:
@@ -72,14 +74,13 @@ jobs:
           ls -la pkg/agentsight-*.pkg.tar.*
 
       - name: Upload package to release
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           PKG_FILE=$(ls pkg/agentsight-*.pkg.tar.* | head -n1)
-          gh release create "${VERSION}" \
-            --title "${VERSION}" \
-            --notes "Arch Linux package for ${VERSION}" \
+          gh release create "${RELEASE_TAG}" \
+            --title "${RELEASE_TAG}" \
+            --notes "Arch Linux package for ${RELEASE_TAG}" \
             --prerelease || true
-          gh release upload "${VERSION}" "${PKG_FILE}" --clobber
+          gh release upload "${RELEASE_TAG}" "${PKG_FILE}" --clobber
