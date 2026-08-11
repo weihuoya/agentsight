@@ -6,7 +6,7 @@ session IR for applications such as AgentSight.
 
 ## Responsibilities
 
-- Discover and parse local Claude Code, Codex, and Gemini CLI session files.
+- Discover and parse local Claude Code, Codex, Gemini CLI, Cursor, and Kimi Code session files.
 - Normalize model usage, token totals, tool calls, file references, prompts,
   cwd, timestamps, and session identifiers.
 - Match live process trees to sessions using real path evidence, sticky

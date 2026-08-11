@@ -40,6 +40,8 @@ pub fn provider_from_host(host: &str) -> String {
         "gcp.gen_ai".to_string()
     } else if h.contains("bedrock") {
         "aws.bedrock".to_string()
+    } else if h.contains("moonshot") || h.contains("kimi") {
+        "moonshot".to_string()
     } else {
         host.to_string()
     }
@@ -226,5 +228,12 @@ mod tests {
             extract_model_from_path("/v1beta/models/gemini-2.5-pro:generateContent").as_deref(),
             Some("gemini-2.5-pro")
         );
+    }
+
+    #[test]
+    fn maps_moonshot_hosts_to_provider() {
+        assert_eq!(provider_from_host("api.moonshot.cn"), "moonshot");
+        assert_eq!(provider_from_host("api.moonshot.ai"), "moonshot");
+        assert_eq!(provider_from_host("api.kimi.com"), "moonshot");
     }
 }

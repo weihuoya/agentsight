@@ -65,6 +65,44 @@ This captures:
 > the `--comm` filter is automatically skipped for SSL monitoring (but still
 > applied for process monitoring) to ensure traffic is captured correctly.
 
+## Kimi Code (Moonshot AI)
+
+Kimi Code is available as both a terminal CLI (`kimi-cli`) and a VS Code extension (`moonshot-ai.kimi-code`).
+
+### Kimi Code CLI
+
+The CLI is a Python application. AgentSight traces it like any other command:
+
+```bash
+# Auto-discover and trace the kimi binary
+sudo ./agentsight record -- kimi
+
+# Attach to a running kimi session
+sudo ./agentsight record -c kimi
+```
+
+Kimi Code CLI communicates with Moonshot API endpoints (`api.moonshot.cn/v1`, `api.kimi.com/coding/v1`).
+AgentSight's HTTP parser recognizes these hosts and attributes traffic to the `moonshot` provider.
+
+AgentSight also reads Kimi Code's native session files (`~/.kimi/sessions/<md5(cwd)>/<uuid>/wire.jsonl`),
+so `agentsight top` and `agentsight report --local` show Kimi sessions alongside Claude, Codex, and Gemini.
+The transcripts do not record the model name; it is taken from `default_model` in `~/.kimi/config.toml`
+(falling back to `kimi`).
+
+### Kimi Code VS Code Extension
+
+The VS Code extension runs inside VS Code's Extension Host (an Electron process). VS Code uses Chromium's BoringSSL (similar to Claude Code), so SSL capture works via the same byte-pattern detection path:
+
+```bash
+# Trace all VS Code activity (includes Kimi extension traffic)
+sudo ./agentsight record -c code
+
+# If VS Code is a snap install, you may need the full binary path
+sudo ./agentsight record -c code --binary-path /snap/code/current/usr/share/code/code
+```
+
+> **Note**: Because VS Code is a general-purpose IDE, the process label will be `code` rather than `kimi`. The HTTP `Host` header (`api.moonshot.cn` / `api.kimi.com`) lets you identify Kimi-specific traffic in the captured data.
+
 ## Python AI Tools (aider, open-interpreter, etc.)
 
 ```bash

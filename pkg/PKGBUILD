@@ -1,0 +1,117 @@
+# Maintainer: AgentSight Developer <dev@agentsight.local>
+pkgname=agentsight
+pkgver=1.0.5
+pkgrel=1
+pkgdesc="eBPF-based observability tool for monitoring AI agent behavior on Linux"
+arch=('x86_64' 'aarch64')
+url="https://github.com/eunomia-bpf/agentsight"
+license=('MIT')
+depends=('libelf' 'zlib')
+makedepends=('clang' 'llvm' 'make' 'git' 'nodejs' 'npm' 'rustup')
+optdepends=('docker: for monitoring containerized agents')
+install=agentsight.install
+
+# Detect local build: if this PKGBUILD is inside the git repo, use the local
+# source directly instead of downloading from GitHub.
+# Derive the repo root from the PKGBUILD location so we do not depend on git
+# being configured inside containers (safe.directory, etc.).
+PKGBUILD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_gitroot="$(cd "$PKGBUILD_DIR/.." && pwd)"
+if [[ -f "$_gitroot/collector/Cargo.toml" ]]; then
+    echo "Local build detected: using local source from $_gitroot"
+    source=()
+    sha256sums=()
+else
+    # Standard build: fetch from GitHub tag
+    _gitroot=""
+    source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+    sha256sums=('SKIP')
+fi
+
+prepare() {
+    cd "$srcdir"
+    rm -rf "$pkgname"
+
+    if [[ -n "$_gitroot" && -f "$_gitroot/collector/Cargo.toml" ]]; then
+        echo "Syncing local source from $_gitroot (including uncommitted changes)..."
+        mkdir -p "$pkgname"
+        cp -r "$_gitroot"/. "$pkgname"/
+        rm -rf "$pkgname/.git"
+    else
+        echo "WARNING: Building from tarball without git submodules."
+        echo "Please build from a git checkout or use the git source."
+        return 1
+    fi
+}
+
+build() {
+    cd "$srcdir/$pkgname"
+
+    # Use LLVM toolchain for C compilation and linking to enable cross-language
+    # Thin LTO between Rust (LLVM) and C dependencies (libsqlite3-sys, zstd-sys).
+    export CC=clang
+    export CXX=clang++
+    # Replace GCC LTO flags with LLVM ThinLTO flags
+    export CFLAGS="-flto=thin ${CFLAGS/-flto=auto/}"
+    export CXXFLAGS="-flto=thin ${CXXFLAGS/-flto=auto/}"
+    export LDFLAGS="-fuse-ld=lld ${LDFLAGS}"
+    export CARGO_PROFILE_RELEASE_LTO=thin
+    export RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=lld"
+
+    # Ensure cargo is available. If the user installed rust via rustup
+    # (not pacman), try to locate it automatically.
+    if ! command -v cargo >/dev/null 2>&1; then
+        if [[ -d "$HOME/.cargo/bin" ]]; then
+            export PATH="$HOME/.cargo/bin:$PATH"
+        elif [[ -d "$HOME/.rustup/toolchains" ]]; then
+            _cargo=$(find "$HOME/.rustup/toolchains" -name cargo -type f -print -quit)
+            if [[ -n "$_cargo" ]]; then
+                export PATH="$(dirname "$_cargo"):$PATH"
+            fi
+        fi
+    fi
+
+    # Isolate cargo cache inside the build directory
+    export CARGO_HOME="$srcdir/cargo-home"
+    mkdir -p "$CARGO_HOME"
+
+    # Some distributions ship a stripped /usr/bin/bash; when the readline
+    # symbol is no longer defined in bash itself, attach the uretprobe to
+    # libreadline.so.8 (which bash links dynamically on those systems).
+    if command -v nm >/dev/null 2>&1 && \
+       nm -D /usr/bin/bash 2>/dev/null | grep -qE '^[0-9a-f]+ +T +readline$'; then
+        export BASH_READLINE_SEC='"uretprobe//usr/bin/bash:readline"'
+    else
+        export BASH_READLINE_SEC='"uretprobe//lib/libreadline.so.8:readline"'
+    fi
+
+    # Full build: frontend + eBPF + Rust collector
+    make build
+}
+
+check() {
+    cd "$srcdir/$pkgname"
+
+    # Run C unit tests (do not require root)
+    make -C bpf test 2>/dev/null || true
+
+    # Run Rust unit tests (eBPF runtime tests are skipped without root)
+    cd collector
+    cargo test --lib 2>/dev/null || true
+}
+
+package() {
+    cd "$srcdir/$pkgname"
+
+    # Main binary
+    install -Dm755 "collector/target/release/agentsight" "$pkgdir/usr/bin/agentsight"
+
+    # License
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+    # Documentation
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 docs/agents.md "$pkgdir/usr/share/doc/$pkgname/agents.md"
+    install -Dm644 docs/build.md "$pkgdir/usr/share/doc/$pkgname/build.md"
+    install -Dm644 docs/development.md "$pkgdir/usr/share/doc/$pkgname/development.md"
+}

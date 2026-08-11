@@ -1,0 +1,17 @@
+post_install() {
+    echo "==> agentsight installed to /usr/bin/agentsight"
+    echo ""
+    echo "    Quick start:"
+    echo "      sudo agentsight top"
+    echo "      sudo agentsight record -- <your-agent-command>"
+    echo "      agentsight report"
+    echo ""
+    echo "    Note: Live capture requires root or CAP_BPF + CAP_SYS_ADMIN:"
+    echo "      sudo setcap cap_bpf,cap_sys_admin+ep /usr/bin/agentsight"
+    echo ""
+    echo "    See /usr/share/doc/agentsight/agents.md for per-agent setup."
+}
+
+post_upgrade() {
+    post_install
+}

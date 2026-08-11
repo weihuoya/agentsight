@@ -24,6 +24,12 @@ INCLUDES := -I$(OUTPUT) -I. -I../libbpf/include/uapi -I$(dir $(VMLINUX))
 CFLAGS := -g -Wall
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS)
 
+# Bash readline uretprobe target.  Distributions that strip bash but link
+# libreadline dynamically (e.g. ROCKNIX) should override this to point at the
+# libreadline soname, e.g.:
+#   make BASH_READLINE_SEC='"uretprobe//lib/libreadline.so.8:readline"'
+BASH_READLINE_SEC ?= \"uretprobe//usr/bin/bash:readline\"
+
 # AddressSanitizer flags
 ifdef ASAN
 ASAN_FLAGS := -fsanitize=address -fno-omit-frame-pointer -O1 -g
@@ -199,6 +205,7 @@ $(OUTPUT)/process.bpf.o: $(wildcard process_ext/*.h)
 $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX) | $(OUTPUT) $(BPFTOOL)
 	$(call msg,BPF,$@)
 	$(Q)$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH)		      \
+		     -DBASH_READLINE_SEC='$(BASH_READLINE_SEC)'		      \
 		     $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES)		      \
 		     -c $(filter %.c,$^) -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 	$(Q)$(BPFTOOL) gen object $@ $(patsubst %.bpf.o,%.tmp.bpf.o,$@)

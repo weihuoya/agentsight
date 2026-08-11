@@ -9,8 +9,8 @@ observability tools can answer it directly.
 agent trace history and aggregates prompts and tool calls by semantic intent
 into flamegraphs: width represents token consumption, execution time, or
 operation count. At a glance, you can see where the budget went by category.
-Currently supports Codex and Claude Code local trace files; other agents can be
-added via the `agent-session` parser.
+Currently supports Codex, Claude Code, Cursor, and Kimi Code local trace files;
+other agents can be added via the `agent-session` parser.
 
 ## Limitations of existing tools
 

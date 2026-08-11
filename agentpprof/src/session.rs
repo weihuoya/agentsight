@@ -122,6 +122,12 @@ fn discover_configured_roots(codex_root: &Path, claude_root: &Path) -> Vec<Sessi
         agent_session::AGENT_CODEX,
         codex_root,
     ));
+    if let Some(home) = dirs::home_dir() {
+        discovered.extend(agent_session::discover_session_files_in_dir(
+            agent_session::AGENT_KIMI,
+            &home.join(".kimi/sessions"),
+        ));
+    }
     discovered
 }
 
