@@ -85,6 +85,22 @@ do not refresh them. For packaging outside the Makefile, set
 `AGENTSIGHT_SYNC_VENDOR=1` when building the collector after rebuilding the
 frontend and eBPF loaders.
 
+### Bash readline uretprobe target
+
+Some Linux distributions (including the build host used by the `pkg/` scripts)
+ship a stripped `/usr/bin/bash` that no longer exports the `readline` symbol.
+When bash links `libreadline.so.8` dynamically, build the process BPF program
+with the library target instead:
+
+```bash
+make build-bpf BASH_READLINE_SEC='"uretprobe//lib/libreadline.so.8:readline"'
+# or for the full build
+make build BASH_READLINE_SEC='"uretprobe//lib/libreadline.so.8:readline"'
+```
+
+On systems where `/usr/bin/bash` still exports `readline`, the default target
+`uretprobe//usr/bin/bash:readline` is used.
+
 ## Verify
 
 Run the test suite:

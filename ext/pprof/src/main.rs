@@ -231,7 +231,7 @@ fn command_export(args: Cli) -> Result<()> {
     filter_sessions_before_tagging(&mut sessions, &args);
     if sessions.is_empty() {
         bail!(
-            "no local Codex or Claude sessions matched {}",
+            "no local Codex, Claude, or Kimi sessions matched {}",
             project_root.display()
         );
     }

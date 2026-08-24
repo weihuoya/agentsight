@@ -1,0 +1,86 @@
+name: Build Arch Linux package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+  # Fixed release tag for manual builds; tag pushes still use the tag name.
+  RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'agentsight-arch-pkg' }}
+
+jobs:
+  build-arch-pkg:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          fetch-depth: 0
+
+      - name: Update PKGBUILD version
+        run: |
+          set -euo pipefail
+          PKGVER="${VERSION#v}"
+          sed -i "s/^pkgver=.*/pkgver=${PKGVER}/" pkg/PKGBUILD
+          grep '^pkgver=' pkg/PKGBUILD
+
+      - name: Build package in Arch Linux container
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work/pkg \
+            archlinux:latest \
+            bash -c '
+              set -euo pipefail
+              # Initialize pacman keyring and update
+              pacman-key --init
+              pacman-key --populate archlinux
+              pacman -Syu --noconfirm
+
+              # Install build dependencies
+              pacman -S --noconfirm --needed \
+                base-devel git rustup nodejs npm clang llvm lld \
+                libelf zlib sudo
+
+              # Create a non-root user for makepkg
+              useradd -m -G wheel -s /bin/bash builder
+              echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+              # The /work volume is mounted from the GitHub Actions runner and
+              # owned by a different UID; makepkg needs to write into pkg/.build.
+              chown -R builder:builder /work
+
+              # Install Rust toolchain for builder
+              sudo -u builder bash -c "
+                rustup default stable
+                rustup target add x86_64-unknown-linux-gnu
+              "
+
+              # Build the package. PKGBUILD auto-detects whether bash exports
+              # readline and falls back to libreadline.so.8 when needed.
+              sudo -u builder ./build-local.sh
+            '
+
+      - name: Show built package
+        run: |
+          ls -la pkg/agentsight-*.pkg.tar.*
+
+      - name: Upload package to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PKG_FILE=$(ls pkg/agentsight-*.pkg.tar.* | grep -v -- '-debug-' | head -n1)
+          gh release create "${RELEASE_TAG}" \
+            --title "${RELEASE_TAG}" \
+            --notes "Arch Linux package for ${RELEASE_TAG}" \
+            --prerelease || true
+          gh release upload "${RELEASE_TAG}" "${PKG_FILE}" --clobber

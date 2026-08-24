@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-//! Session file parsing for Claude Code, Codex, and Gemini CLI.
+//! Session file parsing for Claude Code, Codex, Gemini CLI, Cursor, and Kimi Code.
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -14,7 +14,7 @@ use crate::types::{
     AgentSession, LlmResponse, PlanStep, SessionCandidate, SessionDirStat, SessionEvents,
     TokenUsage, ToolEvent, ToolPath, UserPrompt,
 };
-use crate::{AGENT_CLAUDE, AGENT_CODEX, AGENT_CURSOR, AGENT_GEMINI};
+use crate::{AGENT_CLAUDE, AGENT_CODEX, AGENT_CURSOR, AGENT_GEMINI, AGENT_KIMI};
 
 /// Discover all session files in the user's home directory.
 pub fn discover_session_files() -> Vec<SessionCandidate> {
@@ -36,6 +36,7 @@ fn discover_session_files_in_roots(home: &Path, codex_home: &Path) -> Vec<Sessio
         (AGENT_CODEX, codex_home.join("sessions")),
         (AGENT_GEMINI, home.join(".gemini/tmp")),
         (AGENT_CURSOR, home.join(".cursor/projects")),
+        (AGENT_KIMI, home.join(".kimi/sessions")),
     ];
     let mut out = Vec::new();
     for (agent, dir) in roots {
@@ -166,6 +167,7 @@ fn count_session_dirs_in_roots(home: &Path, codex_home: &Path) -> Vec<SessionDir
         (AGENT_CODEX, codex_home.join("sessions")),
         (AGENT_GEMINI, home.join(".gemini/tmp")),
         (AGENT_CURSOR, home.join(".cursor/projects")),
+        (AGENT_KIMI, home.join(".kimi/sessions")),
     ]
     .into_iter()
     .filter_map(|(agent, dir)| {
@@ -239,6 +241,8 @@ fn parse_session_impl(
         parse_gemini_json(path, updated, content)
     } else if agent == AGENT_CURSOR {
         parse_cursor_jsonl(path, updated, content, cursor_children)
+    } else if agent == AGENT_KIMI {
+        parse_kimi_wire(path, updated, content)
     } else {
         parse_jsonl(agent, path, updated, content)
     }
@@ -278,6 +282,10 @@ pub fn agent_source_for_path(path: &Path) -> Option<&'static str> {
         Some(AGENT_GEMINI)
     } else if value.contains("/.cursor/") && is_cursor_transcript(path) {
         Some(AGENT_CURSOR)
+    } else if value.contains("/.kimi/")
+        && path.file_name().and_then(|name| name.to_str()) == Some("wire.jsonl")
+    {
+        Some(AGENT_KIMI)
     } else {
         None
     }
@@ -319,6 +327,7 @@ pub fn fixture_session_path(agent: &str, home: &Path) -> Option<PathBuf> {
         AGENT_CURSOR => {
             Some(home.join(".cursor/projects/test/agent-transcripts/session/session.jsonl"))
         }
+        AGENT_KIMI => Some(home.join(".kimi/sessions/test/00000000-0000-0000-0000-000000000000/wire.jsonl")),
         _ => None,
     }
 }
@@ -1345,6 +1354,183 @@ fn parse_gemini_json(path: &Path, updated: SystemTime, content: &str) -> Option<
     acc.finish_with_events(events)
 }
 
+/// Parse a Kimi Code session from its `wire.jsonl` event stream.
+///
+/// Kimi stores sessions under `~/.kimi/sessions/<md5(cwd)>/<uuid>/wire.jsonl`.
+/// Each line is `{"timestamp": <epoch secs>, "message": {"type", "payload"}}`.
+/// The transcript does not record the model name; it is taken from
+/// `~/.kimi/config.toml`'s `default_model` (falling back to "kimi").
+fn parse_kimi_wire(path: &Path, updated: SystemTime, content: &str) -> Option<AgentSession> {
+    let mut acc = SessionAccumulator::new(AGENT_KIMI, path, updated);
+    // The session id is the parent directory name (a UUID), not the file stem.
+    if let Some(id) = path
+        .parent()
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+    {
+        acc.session_id = id.to_string();
+        acc.conversation_id = Some(id.to_string());
+    }
+    let model = kimi_default_model().unwrap_or_else(|| AGENT_KIMI.to_string());
+    acc.model = Some(model.clone());
+    // The grandparent directory is md5(cwd); recover the cwd by matching it
+    // against the known work directories in ~/.kimi/kimi.json.
+    acc.cwd = kimi_cwd_for_session_path(path);
+    let mut events = SessionEvents::default();
+    let mut current_prompt_index = 0usize;
+    let mut call_index = BTreeMap::<String, usize>::new();
+    let mut first_ts_ms = None;
+
+    for line in content.lines() {
+        let Ok(obj) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(message) = obj.get("message") else {
+            continue;
+        };
+        let ts_ms = obj
+            .get("timestamp")
+            .and_then(Value::as_f64)
+            .map(|secs| (secs * 1000.0) as i64);
+        if let Some(ts) = ts_ms {
+            first_ts_ms = first_ts_ms.or(Some(ts));
+            acc.end_timestamp_ms = u64::try_from(ts).ok().or(acc.end_timestamp_ms);
+        }
+        let typ = message.get("type").and_then(Value::as_str).unwrap_or("");
+        let payload = message.get("payload").unwrap_or(&Value::Null);
+        match typ {
+            "TurnBegin" => {
+                if let Some(text) = payload
+                    .get("user_input")
+                    .and_then(Value::as_str)
+                    .and_then(clean_prompt_text)
+                {
+                    if acc.prompt_preview.is_none() {
+                        acc.prompt_preview = Some(text.clone());
+                    }
+                    current_prompt_index = events.upsert_prompt(ts_ms, &text, Vec::new());
+                }
+            }
+            "StatusUpdate" => {
+                let Some(usage) = payload.get("token_usage") else {
+                    continue;
+                };
+                let input = json_i64(usage, "input_other");
+                let output = json_i64(usage, "output");
+                let cache_creation = json_i64(usage, "input_cache_creation");
+                let cache_read = json_i64(usage, "input_cache_read");
+                if input + output + cache_creation + cache_read == 0 {
+                    continue;
+                }
+                acc.add_usage(&model, input, output, cache_creation, cache_read, 0);
+                events.llm_responses.push(LlmResponse {
+                    ts_ms,
+                    prompt_index: current_prompt_index,
+                    model: model.clone(),
+                    source_id: String::new(),
+                    text_hash: short_hash(&usage.to_string(), 12),
+                    text: String::new(),
+                    preview: "token report".to_string(),
+                    input_tokens: u64::try_from(input).unwrap_or(0),
+                    output_tokens: u64::try_from(output).unwrap_or(0),
+                    cache_tokens: u64::try_from(cache_creation + cache_read).unwrap_or(0),
+                    total_tokens: 0,
+                    tag: String::new(),
+                    response_phase: String::new(),
+                    skill: String::new(),
+                    task_path: Vec::new(),
+                });
+            }
+            "ToolCall" => {
+                let name = payload
+                    .pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?");
+                acc.add_tool(name);
+                // Kimi encodes tool arguments as a JSON string.
+                let args = payload
+                    .pointer("/function/arguments")
+                    .and_then(Value::as_str)
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                    .unwrap_or(Value::Null);
+                if let Some(fp) = find_file_arg(&args).filter(|fp| !is_noise_path(fp)) {
+                    acc.add_file(fp);
+                }
+                let call_id = payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let event = tool_event_from_input(
+                    acc.cwd.as_deref(),
+                    ts_ms,
+                    current_prompt_index,
+                    name,
+                    &args,
+                    call_id.clone(),
+                    Vec::new(),
+                );
+                if let Some(id) = call_id {
+                    call_index.insert(id, events.tools.len());
+                }
+                events.tools.push(event);
+            }
+            "ToolResult" => {
+                if let Some(call_id) = payload.get("tool_call_id").and_then(Value::as_str)
+                    && let Some(index) = call_index.get(call_id).copied()
+                    && let Some(tool) = events.tools.get_mut(index)
+                {
+                    let is_error = payload
+                        .pointer("/return_value/is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    tool.status = if is_error { "fail" } else { "ok" }.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    acc.start_timestamp_ms = first_ts_ms.and_then(|ts| u64::try_from(ts).ok());
+    if let (Some(start), Some(end)) = (acc.start_timestamp_ms, acc.end_timestamp_ms) {
+        acc.duration_ms = end.saturating_sub(start);
+    }
+    acc.finish_with_events(events)
+}
+
+/// Read `default_model` from `~/.kimi/config.toml` with a simple line scan
+/// (avoids a TOML dependency for a single key).
+fn kimi_default_model() -> Option<String> {
+    let path = user_home_dir()?.join(".kimi/config.toml");
+    let content = fs::read_to_string(path).ok()?;
+    content.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("default_model")?;
+        let value = value.split_once('=')?.1.trim();
+        let value = value.strip_prefix('"')?.split('"').next()?;
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+/// Recover the cwd of a Kimi session from its path. The grandparent directory
+/// of `wire.jsonl` is `md5(cwd)`; match it against the `work_dirs` entries in
+/// `~/.kimi/kimi.json`.
+fn kimi_cwd_for_session_path(path: &Path) -> Option<String> {
+    let hash = path.parent()?.parent()?.file_name()?.to_str()?;
+    let content = fs::read_to_string(user_home_dir()?.join(".kimi/kimi.json")).ok()?;
+    let root: Value = serde_json::from_str(&content).ok()?;
+    let work_dirs = root.get("work_dirs")?.as_array()?;
+    work_dirs
+        .iter()
+        .filter_map(|entry| entry.get("path").and_then(Value::as_str))
+        .find(|work_dir| md5_hex(work_dir) == hash)
+        .map(ToString::to_string)
+}
+
+fn md5_hex(text: &str) -> String {
+    let digest = md5::Md5::digest(text.as_bytes());
+    hex::encode(digest)
+}
+
 fn read_cursor_subagents(path: &Path) -> Vec<(PathBuf, String)> {
     let Some(dir) = path.parent().map(|parent| parent.join("subagents")) else {
         return Vec::new();
@@ -1899,6 +2085,9 @@ fn is_agent_file_for(agent: &str, path: &Path) -> bool {
                 && normalized.contains("/chats/")
         }
         AGENT_CURSOR => is_cursor_parent_transcript(path),
+        AGENT_KIMI => {
+            path.file_name().and_then(|name| name.to_str()) == Some("wire.jsonl")
+        }
         _ => false,
     }
 }
@@ -5264,10 +5453,95 @@ mod tests {
     }
 
     #[test]
+    fn kimi_wire_events_share_one_ir() {
+        let content = concat!(
+            r#"{"type": "metadata", "protocol_version": "1.10"}"#,
+            "\n",
+            r#"{"timestamp": 1783933820.5, "message": {"type": "TurnBegin", "payload": {"user_input": "fix the install script"}}}"#,
+            "\n",
+            r#"{"timestamp": 1783933821.0, "message": {"type": "ToolCall", "payload": {"type": "function", "id": "tool_1", "function": {"name": "ReadFile", "arguments": "{\"path\":\"pkg/agentsight.install\"}"}}}}"#,
+            "\n",
+            r#"{"timestamp": 1783933822.0, "message": {"type": "ToolResult", "payload": {"tool_call_id": "tool_1", "return_value": {"is_error": false, "output": "ok"}}}}"#,
+            "\n",
+            r#"{"timestamp": 1783933823.0, "message": {"type": "StatusUpdate", "payload": {"context_tokens": 100, "token_usage": {"input_other": 60, "output": 10, "input_cache_read": 30, "input_cache_creation": 0}, "message_id": "chatcmpl-1"}}}"#,
+            "\n",
+            r#"{"timestamp": 1783933824.0, "message": {"type": "StatusUpdate", "payload": {"context_tokens": 120, "token_usage": {"input_other": 20, "output": 5, "input_cache_read": 90, "input_cache_creation": 4}, "message_id": "chatcmpl-2"}}}"#,
+            "\n",
+            r#"{"timestamp": 1783933825.0, "message": {"type": "TurnEnd", "payload": {}}}"#,
+        );
+        let path = PathBuf::from(
+            "/home/u/.kimi/sessions/f34342e976e644e2c3d13e5570d01d3d/00000000-0000-0000-0000-000000000000/wire.jsonl",
+        );
+        let session = parse_session_content(AGENT_KIMI, &path, UNIX_EPOCH, content)
+            .expect("kimi session");
+
+        assert_eq!(session.agent_type, AGENT_KIMI);
+        // Session id comes from the parent directory, not the file stem.
+        assert_eq!(session.session_id, "00000000-0000-0000-0000-000000000000");
+        assert_eq!(session.prompt_preview.as_deref(), Some("fix the install script"));
+
+        // Token usage is summed across StatusUpdate events.
+        let usage = &session.usage;
+        assert_eq!(usage.input_tokens, 80);
+        assert_eq!(usage.output_tokens, 15);
+        assert_eq!(usage.cache_read_tokens, 120);
+        assert_eq!(usage.cache_creation_tokens, 4);
+
+        // Model comes from ~/.kimi/config.toml or falls back to the agent name.
+        let expected = kimi_default_model().unwrap_or_else(|| AGENT_KIMI.to_string());
+        assert_eq!(session.model.as_deref(), Some(expected.as_str()));
+        assert!(session.model_usage.contains_key(&expected));
+
+        // Tool call paired with its result.
+        assert_eq!(session.events.tools.len(), 1);
+        assert_eq!(session.events.tools[0].tool_name, "ReadFile");
+        assert_eq!(session.events.tools[0].status, "ok");
+        assert!(session.files.contains_key("pkg/agentsight.install"));
+
+        // One LlmResponse per StatusUpdate, attached to the prompt.
+        assert_eq!(session.events.llm_responses.len(), 2);
+        assert_eq!(session.events.llm_responses[0].preview, "token report");
+        assert_eq!(session.events.prompts.len(), 1);
+
+        // Timestamps span first to last event.
+        assert_eq!(session.start_timestamp_ms, Some(1783933820500));
+        assert_eq!(session.duration_ms, 4500);
+    }
+
+    #[test]
+    fn kimi_md5_matches_session_dir_names() {
+        // The session directory name is md5(cwd); verified against kimi.json
+        // work_dirs on a real installation.
+        assert_eq!(
+            md5_hex("/home/weiz/Projects/agentsight"),
+            "f34342e976e644e2c3d13e5570d01d3d"
+        );
+        assert_ne!(
+            md5_hex("/home/weiz/Projects/other"),
+            "f34342e976e644e2c3d13e5570d01d3d"
+        );
+    }
+
+    #[test]
     fn prompt_detail_preserves_source_line_breaks() {
         assert_eq!(
             clean_prompt_text("first line\nsecond line").as_deref(),
             Some("first line\nsecond line")
+        );
+    }
+
+    #[test]
+    fn kimi_paths_are_detected() {
+        let wire = PathBuf::from("/home/u/.kimi/sessions/abc/def/wire.jsonl");
+        assert_eq!(agent_source_for_path(&wire), Some(AGENT_KIMI));
+        let context = PathBuf::from("/home/u/.kimi/sessions/abc/def/context.jsonl");
+        assert_eq!(agent_source_for_path(&context), None);
+        assert!(is_agent_file_for(AGENT_KIMI, &wire));
+        assert!(!is_agent_file_for(AGENT_KIMI, &context));
+        let home = PathBuf::from("/home/u");
+        assert_eq!(
+            fixture_session_path(AGENT_KIMI, &home),
+            Some(home.join(".kimi/sessions/test/00000000-0000-0000-0000-000000000000/wire.jsonl"))
         );
     }
 }

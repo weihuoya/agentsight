@@ -220,6 +220,7 @@ fn label_from_exec_name(name: &str) -> Option<&'static str> {
         "claude" | "claude-code" => Some("claude"),
         "codex" | "codex-cli" => Some("codex"),
         "gemini" | "gemini-cli" => Some("gemini"),
+        "kimi" | "kimi-cli" => Some("kimi"),
         "opencode" => Some("opencode"),
         "aider" => Some("aider"),
         "goose" => Some("goose"),
@@ -237,6 +238,8 @@ fn label_from_known_package_path(path: &str) -> Option<&'static str> {
         Some("codex")
     } else if path.contains("@google/gemini-cli") || path.contains("/gemini-cli/") {
         Some("gemini")
+    } else if path.contains("/kimi-cli/") || path.contains("/kimi/") {
+        Some("kimi")
     } else {
         None
     }
@@ -325,6 +328,11 @@ mod tests {
             Some("codex")
         );
         assert_eq!(known_agent_label("openclaw-gatewa", ""), Some("openclaw"));
+        assert_eq!(known_agent_label("kimi", "kimi"), Some("kimi"));
+        assert_eq!(
+            known_agent_label("node", "node /opt/npm/bin/kimi-cli"),
+            Some("kimi")
+        );
     }
 
     #[test]

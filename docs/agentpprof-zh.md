@@ -2,7 +2,7 @@
 
 月底账单显示 agent 花了 $3000。哪些类型的工作消耗了这些预算？代码审查占多少、debug 占多少、文档生成占多少？这个问题看似简单，但现有的 agent 可观测性工具都无法直接回答。
 
-`agentpprof` 正是为回答这类问题而设计的分析工具。它读取本地 agent 的 trace 历史，按语义意图将 prompt 和工具调用聚合成 flamegraph：宽度代表 token 消耗、执行时间或操作次数的占比。一眼就能看出预算花在了哪类工作上。当前支持 Codex 和 Claude Code 的本地 trace 文件，其他 agent 可通过 `agent-session` 解析器扩展。
+`agentpprof` 正是为回答这类问题而设计的分析工具。它读取本地 agent 的 trace 历史，按语义意图将 prompt 和工具调用聚合成 flamegraph：宽度代表 token 消耗、执行时间或操作次数的占比。一眼就能看出预算花在了哪类工作上。当前支持 Codex、Claude Code、Cursor 和 Kimi Code 的本地 trace 文件，其他 agent 可通过 `agent-session` 解析器扩展。
 
 ## 现有工具的局限
 

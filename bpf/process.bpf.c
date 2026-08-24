@@ -25,8 +25,18 @@ const volatile unsigned long long min_duration_ns = 0;
 
 #include "process_ext/bpf_common.h"
 
-/* Bash readline uretprobe handler */
-SEC("uretprobe//usr/bin/bash:readline")
+/* Bash readline uretprobe handler
+ *
+ * Some distributions (e.g. ROCKNIX) ship a stripped /usr/bin/bash that no
+ * longer exports the readline symbol.  Bash still links libreadline.so
+ * dynamically, so attach the uretprobe to the library instead.  The default
+ * keeps the historical /usr/bin/bash target; override at build time via
+ * BASH_READLINE_SEC if your target system needs libreadline.
+ */
+#ifndef BASH_READLINE_SEC
+#define BASH_READLINE_SEC "uretprobe//usr/bin/bash:readline"
+#endif
+SEC(BASH_READLINE_SEC)
 int BPF_URETPROBE(bash_readline, const void *ret)
 {
 	struct event *e;
@@ -262,55 +272,6 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx)
 	/* Copy filepath and set file open details */
 	bpf_probe_read_kernel_str(e->file_op.filepath, sizeof(e->file_op.filepath), filepath);
 	e->file_op.fd = -1; /* Will be set on return if needed */
-	e->file_op.flags = flags;
-	e->file_op.is_open = true;
-
-	/* Submit to user-space */
-	bpf_ringbuf_submit(e, 0);
-	return 0;
-}
-
-/* Syscall tracepoint for open */
-SEC("tp/syscalls/sys_enter_open")
-int trace_open(struct trace_event_raw_sys_enter *ctx)
-{
-	struct event *e;
-	pid_t pid;
-	char filepath[MAX_FILENAME_LEN];
-	int flags;
-	const char *filename;
-
-	if (!is_cgroup_tracked())
-		return 0;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-
-	/* Get syscall arguments */
-	filename = (const char *)ctx->args[0];
-	flags = (int)ctx->args[1];
-
-	/* Read filename from user space */
-	if (bpf_probe_read_user_str(filepath, sizeof(filepath), filename) < 0)
-		return 0;
-
-	/* Reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	/* Fill out the event */
-	e->type = EVENT_TYPE_FILE_OPERATION;
-	e->pid = pid;
-	e->ppid = 0;
-	e->exit_code = 0;
-	e->duration_ns = 0;
-	e->timestamp_ns = bpf_ktime_get_ns();
-	e->exit_event = false;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-
-	/* Copy filepath and set file open details */
-	bpf_probe_read_kernel_str(e->file_op.filepath, sizeof(e->file_op.filepath), filepath);
-	e->file_op.fd = -1;
 	e->file_op.flags = flags;
 	e->file_op.is_open = true;
 

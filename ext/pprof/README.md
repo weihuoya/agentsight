@@ -1,9 +1,9 @@
 # agentpprof
 
 `agentpprof` turns local AI coding-agent sessions into pprof-compatible semantic
-profiles. It reads Codex and Claude Code JSONL history through AgentSight's
-`agent-session` crate, assigns one-word tags to sessions, prompts, and LLM
-calls, and writes one explicit output file.
+profiles. It reads Codex, Claude Code, Cursor, and Kimi Code JSONL history
+through AgentSight's `agent-session` crate, assigns one-word tags to sessions,
+prompts, and LLM calls, and writes one explicit output file.
 
 The profiles are not CPU profiles. They are projections over agent activity:
 tool events, file effects, network effects, or token usage.
@@ -120,8 +120,8 @@ LLM tags are cached under the user cache directory by default, for example
 
 ## Selecting Sessions
 
-By default, `agentpprof` scans recent local Codex and Claude Code sessions that
-match `--project-root`.
+By default, `agentpprof` scans recent local Codex, Claude Code, Cursor, and
+Kimi Code sessions that match `--project-root`.
 Those logs can contain prompts, paths, model outputs, and tool results. For
 repeatable private investigations, use explicit `--session-file` inputs.
 
